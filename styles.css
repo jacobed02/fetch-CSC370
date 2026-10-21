@@ -335,14 +335,14 @@ h2 {
 }
 
 .show-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 345px), 1fr));
-  align-items: stretch;
+  display: flex;
+  flex-wrap: wrap;
   gap: 17px;
 }
 
 .show-card {
   display: flex;
+  flex: 1 1 345px;
   min-width: 0;
   flex-direction: column;
   overflow: hidden;
@@ -618,10 +618,6 @@ h2 {
 
   .results-section {
     padding: 35px 0 48px;
-  }
-
-  .show-grid {
-    grid-template-columns: 1fr;
   }
 
   .site-footer {

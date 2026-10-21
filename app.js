@@ -8,8 +8,10 @@ const statusMessage = document.querySelector("#status-message");
 const resultCount = document.querySelector("#result-count");
 
 let searchController;
-let searchTimer;
 let latestSearch = 0;
+let activeQuery = "";
+const searchCache = new Map();
+const castCache = new Map();
 
 function setStatus(message, state = "default") {
   statusMessage.replaceChildren();
@@ -45,6 +47,16 @@ function textOrFallback(value, fallback = "Not available") {
     return fallback;
   }
   return String(value);
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    const error = new Error(`TVmaze request failed with status ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
 }
 
 function plainText(html) {
@@ -206,50 +218,66 @@ function createShowCard(show) {
 }
 
 async function loadCast(showId, castElement) {
+  let castRequest = castCache.get(showId);
+
+  if (!castRequest) {
+    castRequest = fetchJson(`${API_BASE}/shows/${encodeURIComponent(showId)}/cast`)
+      .then((cast) => cast
+        .slice(0, MAX_CAST_MEMBERS)
+        .map((entry) => entry.person?.name)
+        .filter(Boolean));
+    castCache.set(showId, castRequest);
+  }
+
   try {
-    const response = await fetch(`${API_BASE}/shows/${encodeURIComponent(showId)}/cast`);
-    if (!response.ok) {
-      throw new Error(`Cast request failed with status ${response.status}`);
-    }
-    const cast = await response.json();
-    const names = cast
-      .slice(0, MAX_CAST_MEMBERS)
-      .map((entry) => entry.person?.name)
-      .filter(Boolean);
+    const names = await castRequest;
     castElement.textContent = names.length > 0 ? names.join(", ") : "Not available";
     castElement.classList.remove("is-loading");
   } catch (error) {
+    if (castCache.get(showId) === castRequest) {
+      castCache.delete(showId);
+    }
     console.error("Unable to load show cast:", error);
-    castElement.textContent = "Cast unavailable";
+    castElement.textContent = error.status === 429
+      ? "TVmaze rate limit reached. Try again shortly."
+      : "Cast unavailable";
     castElement.classList.remove("is-loading");
   }
 }
 
 async function searchShows(query) {
+  const trimmedQuery = query.trim();
+  const normalizedQuery = trimmedQuery.toLocaleLowerCase();
+
+  if (normalizedQuery && normalizedQuery === activeQuery && showGrid.getAttribute("aria-busy") === "true") {
+    return;
+  }
+
   const searchId = ++latestSearch;
+  activeQuery = normalizedQuery;
   if (searchController) {
     searchController.abort();
   }
-  searchController = new AbortController();
   clearResults();
 
-  if (!query.trim()) {
+  if (!trimmedQuery) {
     setStatus("Search for a show to get started.");
     return;
   }
 
+  searchController = new AbortController();
   showGrid.setAttribute("aria-busy", "true");
-  setStatus(`Looking for “${query.trim()}”…`, "loading");
+  setStatus(`Looking for “${trimmedQuery}”…`, "loading");
 
   try {
-    const response = await fetch(
-      `${API_BASE}/search/shows?q=${encodeURIComponent(query.trim())}`,
-      { signal: searchController.signal },
-    );
-    if (!response.ok) {
-      throw new Error(`Search request failed with status ${response.status}`);
+    let results = searchCache.get(normalizedQuery);
+    if (!results) {
+      results = await fetchJson(
+        `${API_BASE}/search/shows?q=${encodeURIComponent(trimmedQuery)}`,
+        { signal: searchController.signal },
+      );
+      searchCache.set(normalizedQuery, results);
     }
-    const results = await response.json();
     if (searchId !== latestSearch) {
       return;
     }
@@ -260,7 +288,7 @@ async function searchShows(query) {
       .slice(0, MAX_RESULTS);
 
     if (shows.length === 0) {
-      setStatus(`No shows found for “${query.trim()}”. Try another title or keyword.`);
+      setStatus(`No shows found for “${trimmedQuery}”. Try another title or keyword.`);
       return;
     }
 
@@ -276,7 +304,12 @@ async function searchShows(query) {
       return;
     }
     console.error("Unable to search TVmaze:", error);
-    setStatus("We couldn’t load shows right now. Please check your connection and try again.", "error");
+    setStatus(
+      error.status === 429
+        ? "TVmaze is receiving too many requests right now. Please wait a moment before searching again."
+        : "We couldn’t load shows right now. Please check your connection and try again.",
+      "error",
+    );
   } finally {
     if (searchId === latestSearch) {
       showGrid.setAttribute("aria-busy", "false");
@@ -286,16 +319,7 @@ async function searchShows(query) {
 
 searchForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  clearTimeout(searchTimer);
   searchShows(searchInput.value);
 });
 
-searchInput.addEventListener("input", () => {
-  clearTimeout(searchTimer);
-  const query = searchInput.value;
-  if (!query.trim()) {
-    searchShows("");
-    return;
-  }
-  searchTimer = setTimeout(() => searchShows(query), 350);
-});
+searchShows(searchInput.value);
